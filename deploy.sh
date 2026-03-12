@@ -8,6 +8,20 @@ BLUE='\033[0;34m'
 echo -e "${BLUE}=== Configuração Interativa Whaticket (Docker) ===${NC}"
 echo "Este script irá configurar o seu arquivo .env e iniciar o projeto."
 
+echo ""
+read -p "Deseja realizar uma limpeza profunda antes de começar? (ISSO APAGARÁ O BANCO DE DADOS ATUAL!) [s/N]: " CLEAN_START
+if [[ "$CLEAN_START" =~ ^[Ss]$ ]]; then
+    echo -e "${BLUE}--- Realizando Limpeza Profunda ---${NC}"
+    if docker compose version > /dev/null 2>&1; then
+        docker compose down -v
+    else
+        docker-compose down -v
+    fi
+    # Opcional: remover imagens antigas
+    # docker system prune -f
+    echo -e "${GREEN}✓ Limpeza concluída.${NC}"
+fi
+
 # Função para perguntar com valor padrão
 ask_with_default() {
     local prompt=$1
