@@ -1,0 +1,35 @@
+# Logs e Arquivos Locais
+*.log
+*_logs*.txt
+logs_debug.txt
+error_stack.txt
+
+# Dependências (Extremamente pesadas)
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+
+# Arquivos de Build
+build/
+dist/
+frontend/build/
+backend/dist/
+
+# Pastas de configuração e dados locais (Senhas e Banco de Dados)
+.env
+backend/.env
+frontend/.env
+.docker/data/
+ssl/
+.wwebjs_auth/
+.wwebjs_cache/
+backup/
+
+# Extensões e IDE
+.idea/
+.vscode/
+.DS_Store
+
+# Scripts e dumps que não precisam ir pra produção
+*.sql
+*.tar.gz

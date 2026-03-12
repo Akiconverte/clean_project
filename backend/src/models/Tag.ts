@@ -1,0 +1,44 @@
+import {
+  Table,
+  Column,
+  CreatedAt,
+  UpdatedAt,
+  Model,
+  PrimaryKey,
+  AutoIncrement,
+  BelongsToMany,
+  HasMany
+} from "sequelize-typescript";
+import Ticket from "./Ticket";
+import TicketTag from "./TicketTag";
+
+@Table
+class Tag extends Model<Tag> {
+  @PrimaryKey
+  @AutoIncrement
+  @Column
+  id: number;
+
+  @Column
+  name: string;
+
+  @Column
+  color: string;
+
+  @HasMany(() => TicketTag)
+  ticketTags: TicketTag[];
+
+  @BelongsToMany(() => Ticket, () => TicketTag)
+  tickets: Ticket[];
+
+  @CreatedAt
+  createdAt: Date;
+
+  @UpdatedAt
+  updatedAt: Date;
+
+  @Column({ defaultValue: 0 })
+  kanban: number;
+}
+
+export default Tag;
