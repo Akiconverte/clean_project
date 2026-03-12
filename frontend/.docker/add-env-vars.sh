@@ -14,20 +14,10 @@ _addSslConfig() {
     FILE_CONF=/etc/nginx/sites.d/${1}.conf
     FILE_SSL_CONF=/etc/nginx/conf.d/00-ssl-redirect.conf;
 
-    # Escreve o conteudo base para evitar perda ao truncar
-    cat <<EOF > ${FILE_CONF}
-location / {
-    try_files \$uri \$uri/ /index.html;
-    include include.d/nocache.conf;
-}
-
-location /static {
-   alias /var/www/public/static/;
-   include include.d/allcache.conf;
-}
-
-include "include.d/spa.conf";
-EOF
+    # Remove previous auto-generated SSL lines to avoid duplication on restart
+    sed -i '/ssl_certificate/d' ${FILE_CONF}
+    sed -i '/listen 80;/d' ${FILE_CONF}
+    sed -i '/include.*ssl.conf/d' ${FILE_CONF}
 
     if [ -f ${SSL_CERTIFICATE} ] && [ -f ${SSL_CERTIFICATE_KEY} ]; then
         echo "saving ssl config in ${FILE_CONF}"
