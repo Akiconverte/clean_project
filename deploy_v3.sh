@@ -73,6 +73,14 @@ wait_for_http() {
     return 1
 }
 
+get_mysql_container_id() {
+    if docker compose version > /dev/null 2>&1; then
+        docker compose ps -q mysql 2>/dev/null || true
+    else
+        docker-compose ps -q mysql 2>/dev/null || true
+    fi
+}
+
 # Função para limpeza COMPLETA
 clean_all() {
     echo -e "${RED}=== 🔥 LIMPEZA NUCLEAR COMPLETA 🔥 ===${NC}"
@@ -218,7 +226,8 @@ health_check() {
                 fi
                 ;;
             "database")
-                if docker ps | grep -q mysql && docker exec $(docker ps -q mysql) mysqladmin ping -h localhost >/dev/null 2>&1; then
+                MYSQL_CID=$(get_mysql_container_id)
+                if [ -n "$MYSQL_CID" ] && docker exec "$MYSQL_CID" mysqladmin ping -h localhost >/dev/null 2>&1; then
                     echo -e "${GREEN}✅ Database saudável${NC}"
                     ((healthy++))
                 else
@@ -275,22 +284,101 @@ case "$MENU_OPTION" in
     "2")
         echo -e "\n${BLUE}=== 🔄 Atualizando Sistema ===${NC}"
         create_backup
-        
-        echo "Baixando atualizações do Git..."
-        git pull origin main || git pull
-        
-        echo "Reconstruindo imagens..."
-        docker builder prune -a -f
-        
-        if docker compose version > /dev/null 2>&1; then
-            docker compose build --no-cache
-            docker compose up -d
-        else
-            docker-compose build --no-cache
-            docker-compose up -d
+
+        echo -e "${BLUE}--- 🧾 Verificando alterações locais (Git) ---${NC}"
+        if ! git diff --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+            echo -e "${YELLOW}⚠️  Existem alterações locais/untracked que podem bloquear o update.${NC}"
+            read -p "Deseja fazer stash automaticamente antes do pull? (recomendado) [S/n]: " DO_STASH
+            if [[ "$DO_STASH" != "n" ]]; then
+                git stash push -u -m "auto-stash deploy_v3 $(date +%Y%m%d_%H%M%S)" >/dev/null 2>&1 || true
+                echo -e "${GREEN}✓ Stash criado.${NC}"
+            fi
         fi
-        
-        sleep 15
+
+        echo -e "${BLUE}--- ⬇️ Baixando atualizações do Git ---${NC}"
+        git pull origin main || git pull
+
+        echo -e "${BLUE}--- 🏗️ Reconstruindo imagens (com cache) ---${NC}"
+        if docker compose version > /dev/null 2>&1; then
+            docker compose build
+        else
+            docker-compose build
+        fi
+
+        echo -e "${BLUE}--- 🚀 Reiniciando serviços em etapas ---${NC}"
+        if [ -z "$BACKEND_PORT" ]; then
+            BACKEND_PORT=8080
+        fi
+        if [ -z "$FRONTEND_PORT" ]; then
+            FRONTEND_PORT=80
+        fi
+
+        if docker compose version > /dev/null 2>&1; then
+            docker compose up -d mysql
+        else
+            docker-compose up -d mysql
+        fi
+
+        echo -e "${BLUE}⏳ Aguardando banco ficar saudável...${NC}"
+        local_db_attempts=30
+        local_db_i=1
+        while [ $local_db_i -le $local_db_attempts ]; do
+            MYSQL_CID=$(get_mysql_container_id)
+            if [ -n "$MYSQL_CID" ] && docker exec "$MYSQL_CID" mysqladmin ping -h localhost >/dev/null 2>&1; then
+                break
+            fi
+            sleep 2
+            local_db_i=$((local_db_i + 1))
+        done
+        if [ $local_db_i -gt $local_db_attempts ]; then
+            echo -e "${RED}❌ Banco não ficou saudável a tempo.${NC}"
+            exit 1
+        fi
+
+        echo -e "${YELLOW}• Subindo backend...${NC}"
+        if docker compose version > /dev/null 2>&1; then
+            docker compose up -d backend
+        else
+            docker-compose up -d backend
+        fi
+
+        echo -e "${BLUE}⏳ Aguardando backend responder /health...${NC}"
+        if ! wait_for_http "http://localhost:${BACKEND_PORT}/health" 45 2; then
+            echo -e "${RED}❌ Backend não ficou saudável a tempo.${NC}"
+            exit 1
+        fi
+
+        echo -e "${BLUE}⏳ Intervalo entre backend e frontend (10s)...${NC}"
+        sleep 10
+
+        echo -e "${YELLOW}• Subindo frontend...${NC}"
+        if docker compose version > /dev/null 2>&1; then
+            docker compose up -d frontend
+        else
+            docker-compose up -d frontend
+        fi
+
+        echo -e "${BLUE}--- 🧩 Migrações ---${NC}"
+        read -p "Deseja rodar migrations agora? [S/n]: " DO_MIGRATE
+        if [[ "$DO_MIGRATE" != "n" ]]; then
+            if docker compose version > /dev/null 2>&1; then
+                docker compose exec backend npx sequelize db:migrate
+            else
+                docker-compose exec backend npx sequelize db:migrate
+            fi
+
+            read -p "Deseja rodar seeds também? (cuidado em produção) [s/N]: " DO_SEED
+            if [[ "$DO_SEED" =~ ^[Ss]$ ]]; then
+                if docker compose version > /dev/null 2>&1; then
+                    docker compose exec backend npx sequelize db:seed:all
+                else
+                    docker-compose exec backend npx sequelize db:seed:all
+                fi
+            fi
+        fi
+
+        echo -e "${BLUE}🏥 Verificação final de saúde...${NC}"
+        sleep 5
         health_check backend frontend database
         echo -e "${GREEN}✅ Atualização concluída!${NC}"
         exit 0
@@ -438,8 +526,12 @@ EOF
                 echo -e "${BLUE}🔧 Configurando SSL...${NC}"
                 mkdir -p ssl/www ssl/certs/backend ssl/certs/frontend
                 
-                echo -e "${YELLOW}• Subindo frontend temporário...${NC}"
-                docker compose up -d frontend
+                echo -e "${YELLOW}• Subindo nginx temporário para validação SSL...${NC}"
+                docker rm -f nginx-temp-ssl >/dev/null 2>&1 || true
+                docker run -d --name nginx-temp-ssl \
+                    -p 80:80 \
+                    -v "$(pwd)/ssl/www:/usr/share/nginx/html" \
+                    nginx:alpine >/dev/null 2>&1
                 
                 echo -e "${YELLOW}• Instalando certbot...${NC}"
                 sudo apt update >/dev/null 2>&1 && sudo apt install -y certbot >/dev/null 2>&1
@@ -459,7 +551,8 @@ EOF
                 sudo cp /etc/letsencrypt/live/frontend/fullchain.pem ./ssl/certs/frontend/fullchain.pem 2>/dev/null || true
                 sudo cp /etc/letsencrypt/live/frontend/privkey.pem ./ssl/certs/frontend/privkey.pem 2>/dev/null || true
                 
-                docker compose down
+                docker stop nginx-temp-ssl >/dev/null 2>&1 || true
+                docker rm nginx-temp-ssl >/dev/null 2>&1 || true
                 echo -e "${GREEN}✅ Configuração SSL concluída!${NC}"
             else
                 echo -e "${YELLOW}⚠️  Pulando configuração SSL${NC}"
@@ -468,20 +561,18 @@ EOF
         
         echo ""
         echo -e "${BLUE}--- 🏗️ Construindo Serviços ---${NC}"
-        
-        # Limpar cache primeiro
-        echo -e "${YELLOW}• Limpando cache Docker...${NC}"
-        docker builder prune -a -f
+
+        # Build (com cache) - evita rebuild demorado e comportamento de loop
         
         # Build backend
-        echo -e "${YELLOW}• Build backend (sem cache)...${NC}"
+        echo -e "${YELLOW}• Build backend (com cache)...${NC}"
         if docker compose version > /dev/null 2>&1; then
-            if ! docker compose build --no-cache backend; then
+            if ! docker compose build backend; then
                 echo -e "${RED}❌ Falha no build do backend!${NC}"
                 exit 1
             fi
         else
-            if ! docker-compose build --no-cache backend; then
+            if ! docker-compose build backend; then
                 echo -e "${RED}❌ Falha no build do backend!${NC}"
                 exit 1
             fi
@@ -489,14 +580,14 @@ EOF
         echo -e "${GREEN}✅ Backend buildado!${NC}"
         
         # Build frontend
-        echo -e "${YELLOW}• Build frontend (sem cache)...${NC}"
+        echo -e "${YELLOW}• Build frontend (com cache)...${NC}"
         if docker compose version > /dev/null 2>&1; then
-            if ! docker compose build --no-cache frontend; then
+            if ! docker compose build frontend; then
                 echo -e "${RED}❌ Falha no build do frontend!${NC}"
                 exit 1
             fi
         else
-            if ! docker-compose build --no-cache frontend; then
+            if ! docker-compose build frontend; then
                 echo -e "${RED}❌ Falha no build do frontend!${NC}"
                 exit 1
             fi
@@ -513,13 +604,11 @@ EOF
 
         echo -e "${BLUE}⏳ Aguardando banco ficar saudável...${NC}"
         sleep 5
-        if ! wait_for_http "http://localhost:${BACKEND_PORT}/health" 1 1 >/dev/null 2>&1; then
-            true
-        fi
         local_db_attempts=30
         local_db_i=1
         while [ $local_db_i -le $local_db_attempts ]; do
-            if docker ps | grep -q mysql && docker exec $(docker ps -q mysql) mysqladmin ping -h localhost >/dev/null 2>&1; then
+            MYSQL_CID=$(get_mysql_container_id)
+            if [ -n "$MYSQL_CID" ] && docker exec "$MYSQL_CID" mysqladmin ping -h localhost >/dev/null 2>&1; then
                 break
             fi
             sleep 2
