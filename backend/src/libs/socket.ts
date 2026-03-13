@@ -10,8 +10,7 @@ let io: SocketIO;
 export const initIO = (httpServer: Server): SocketIO => {
   io = new SocketIO(httpServer, {
     cors: {
-      origin: (origin, callback) => callback(null, true),
-      credentials: true
+      origin: process.env.FRONTEND_URL
     }
   });
 
