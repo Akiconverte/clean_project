@@ -26,12 +26,18 @@ show_logo
 echo "Selecione a operação desejada:"
 echo -e "${GREEN}1) Nova Instalação (Instalar do Zero)${NC}"
 echo -e "${YELLOW}2) Atualizar Sistema (Fazer Upgrade do Git e Docker)${NC}"
+echo -e "${RED}4) APAGAR TUDO - Limpar todos containers Docker${NC}"
 echo -e "${RED}3) Sair${NC}"
 echo ""
-read -p "Digite o número da opção [1-3]: " MENU_OPTION
+read -p "Digite o número da opção [1-4]: " MENU_OPTION
 
 if [ "$MENU_OPTION" == "3" ]; then
     echo "Saindo..."
+    exit 0
+fi
+
+if [ "$MENU_OPTION" == "4" ]; then
+    clean_all_containers
     exit 0
 fi
 
@@ -53,7 +59,27 @@ if [ "$MENU_OPTION" == "2" ]; then
     exit 0
 fi
 
-if [ "$MENU_OPTION" == "1" ]; then
+# Função para limpeza TOTAL (mata tudo)
+clean_all_containers() {
+    echo -e "${RED}=== ATENÇÃO: Isso vai parar TODOS os containers Docker! ===${NC}"
+    read -p "Tem certeza? [s/N]: " confirm
+    if [[ "$confirm" =~ ^[Ss]$ ]]; then
+        echo -e "${BLUE}--- Parando todos os containers...${NC}"
+        docker stop $(docker ps -aq) 2>/dev/null || true
+        echo -e "${BLUE}--- Removendo todos os containers...${NC}"
+        docker rm $(docker ps -aq) 2>/dev/null || true
+        echo -e "${BLUE}--- Removendo todas as networks...${NC}"
+        docker network prune -f 2>/dev/null || true
+        echo -e "${BLUE}--- Liberando portas...${NC}"
+        sudo kill -9 $(sudo lsof -t -i:3306) 2>/dev/null || true
+        sudo kill -9 $(sudo lsof -t -i:8080) 2>/dev/null || true
+        sudo kill -9 $(sudo lsof -t -i:80) 2>/dev/null || true
+        sudo kill -9 $(sudo lsof -t -i:443) 2>/dev/null || true
+        sudo systemctl stop mysql 2>/dev/null || true
+        sudo systemctl stop mariadb 2>/dev/null || true
+        echo -e "${GREEN}✓ TUDO limpo!${NC}"
+    fi
+}
     echo -e "\n${BLUE}=== Nova Instalação LionsTicket ===${NC}"
     
     read -p "Deseja realizar uma limpeza profunda antes de começar? (ISSO APAGARÁ O BANCO DE DADOS ATUAL!) [s/N]: " CLEAN_START
@@ -148,6 +174,9 @@ EOF
     echo -e "${BLUE}--- SSL Automático (Certbot) ---${NC}"
     read -p "Deseja gerar o certificado SSL (HTTPS) agora? (Use APENAS se os DNS já estiverem propagados) [S/n]: " DO_SSL
     if [[ "$DO_SSL" != "n" ]]; then
+        echo -e "${BLUE}Criando pastas SSL...${NC}"
+        mkdir -p ssl/www ssl/certs/backend ssl/certs/frontend
+        
         echo -e "${BLUE}Temporariamente subindo Frontend para validação do Let's Encrypt...${NC}"
         docker compose up -d frontend
         
@@ -166,19 +195,37 @@ EOF
     fi
 
     echo ""
-    echo -e "${BLUE}=== Construindo Contêineres Limpos ===${NC}"
+    echo -e "${BLUE}=== Etapa 1/3: Construindo Backend (sem cache) ===${NC}"
     docker builder prune -a -f
     if docker compose version > /dev/null 2>&1; then
-        docker compose build --no-cache
+        docker compose build --no-cache backend
+    else
+        docker-compose build --no-cache backend
+    fi
+    echo -e "${GREEN}✓ Backend buildado!${NC}"
+    
+    echo ""
+    echo -e "${BLUE}=== Etapa 2/3: Construindo Frontend (sem cache) ===${NC}"
+    if docker compose version > /dev/null 2>&1; then
+        docker compose build --no-cache frontend
+    else
+        docker-compose build --no-cache frontend
+    fi
+    echo -e "${GREEN}✓ Frontend buildado!${NC}"
+    
+    echo ""
+    echo -e "${BLUE}=== Etapa 3/3: Subindo containers ===${NC}"
+    if docker compose version > /dev/null 2>&1; then
         docker compose up -d
     else
-        docker-compose build --no-cache
         docker-compose up -d
     fi
 
+    echo -e "${GREEN}✓ Todos containers no ar!${NC}"
+    
     echo ""
-    echo -e "${BLUE}Aguardando Inicialização do Banco (20s)...${NC}"
-    sleep 20
+    echo -e "${BLUE}Aguardando Inicialização do Banco (30s)...${NC}"
+    sleep 30
 
     echo -e "${BLUE}--- Executando Migrações Oficiais ---${NC}"
     if docker compose version > /dev/null 2>&1; then
