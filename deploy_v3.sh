@@ -45,6 +45,34 @@ check_ports() {
     fi
 }
 
+validate_port() {
+    local port=$1
+    if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+        return 1
+    fi
+    if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+        return 1
+    fi
+    return 0
+}
+
+wait_for_http() {
+    local url=$1
+    local attempts=${2:-30}
+    local sleep_seconds=${3:-2}
+
+    local i=1
+    while [ $i -le $attempts ]; do
+        if curl -fsS "$url" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep "$sleep_seconds"
+        i=$((i + 1))
+    done
+
+    return 1
+}
+
 # Função para limpeza COMPLETA
 clean_all() {
     echo -e "${RED}=== 🔥 LIMPEZA NUCLEAR COMPLETA 🔥 ===${NC}"
@@ -168,7 +196,10 @@ health_check() {
         
         case $service in
             "backend")
-                if curl -f http://localhost:8080/health >/dev/null 2>&1; then
+                if [ -z "$BACKEND_PORT" ]; then
+                    BACKEND_PORT=8080
+                fi
+                if curl -f "http://localhost:${BACKEND_PORT}/health" >/dev/null 2>&1; then
                     echo -e "${GREEN}✅ Backend saudável${NC}"
                     ((healthy++))
                 else
@@ -176,7 +207,10 @@ health_check() {
                 fi
                 ;;
             "frontend")
-                if curl -f http://localhost >/dev/null 2>&1; then
+                if [ -z "$FRONTEND_PORT" ]; then
+                    FRONTEND_PORT=80
+                fi
+                if curl -f "http://localhost:${FRONTEND_PORT}" >/dev/null 2>&1; then
                     echo -e "${GREEN}✅ Frontend saudável${NC}"
                     ((healthy++))
                 else
@@ -263,12 +297,15 @@ case "$MENU_OPTION" in
         ;;
     "1")
         echo -e "\n${BLUE}=== 🚀 Nova Instalação LionsTicket v3.0 ===${NC}"
-        
-        # Verificar portas primeiro
-        echo -e "${CYAN}🔍 Verificando portas disponíveis...${NC}"
-        if ! check_ports 80 443 8080 3306; then
-            echo -e "${RED}❌ Portas ocupadas! Use opção 3 para limpar tudo.${NC}"
-            exit 1
+
+        read -p "Deseja fazer uma limpeza antes de instalar? (down/remove-orphans; mantém dados do banco) [s/N]: " CLEAN_START
+        if [[ "$CLEAN_START" =~ ^[Ss]$ ]]; then
+            echo -e "${YELLOW}• Parando stack atual...${NC}"
+            if docker compose version > /dev/null 2>&1; then
+                docker compose down --remove-orphans
+            else
+                docker-compose down --remove-orphans
+            fi
         fi
         
         # Criar backup
@@ -282,9 +319,41 @@ case "$MENU_OPTION" in
         
         echo ""
         echo -e "${BLUE}--- 🔧 Configurações de Portas ---${NC}"
-        ask_with_default "Porta do Backend (ex: 8080)" "8080" BACKEND_PORT
-        ask_with_default "Porta Frontend HTTP (ex: 80)" "80" FRONTEND_PORT
-        ask_with_default "Porta Frontend HTTPS (ex: 443)" "443" FRONTEND_SSL_PORT
+        while true; do
+            ask_with_default "Porta do Backend (ex: 8080)" "8080" BACKEND_PORT
+            if validate_port "$BACKEND_PORT"; then
+                break
+            fi
+            echo -e "${RED}❌ Porta inválida! Tente novamente.${NC}"
+        done
+        while true; do
+            ask_with_default "Porta Frontend HTTP (ex: 80)" "80" FRONTEND_PORT
+            if validate_port "$FRONTEND_PORT"; then
+                break
+            fi
+            echo -e "${RED}❌ Porta inválida! Tente novamente.${NC}"
+        done
+        while true; do
+            ask_with_default "Porta Frontend HTTPS (ex: 443)" "443" FRONTEND_SSL_PORT
+            if validate_port "$FRONTEND_SSL_PORT"; then
+                break
+            fi
+            echo -e "${RED}❌ Porta inválida! Tente novamente.${NC}"
+        done
+
+        while true; do
+            ask_with_default "Porta do MySQL (ex: 3306)" "3306" MYSQL_PORT
+            if validate_port "$MYSQL_PORT"; then
+                break
+            fi
+            echo -e "${RED}❌ Porta inválida! Tente novamente.${NC}"
+        done
+
+        echo -e "${CYAN}🔍 Verificando portas disponíveis...${NC}"
+        if ! check_ports "$BACKEND_PORT" "$FRONTEND_PORT" "$FRONTEND_SSL_PORT" "$MYSQL_PORT"; then
+            echo -e "${RED}❌ Portas ocupadas! Ajuste as portas ou libere os serviços usando elas.${NC}"
+            exit 1
+        fi
         
         echo ""
         echo -e "${BLUE}--- 🌍 Nomes de Domínio ---${NC}"
@@ -331,14 +400,14 @@ MYSQL_VERSION=10.6
 MYSQL_ROOT_PASSWORD=$MYSQL_ROOT_PASSWORD
 MYSQL_DATABASE=$MYSQL_DATABASE
 MYSQL_USER=whaticket
-MYSQL_PORT=3306
+MYSQL_PORT=$MYSQL_PORT
 TZ=America/Fortaleza
 
 # Configurações do Backend
 BACKEND_PORT=$BACKEND_PORT
 BACKEND_SERVER_NAME=$BACKEND_SERVER_NAME
 BACKEND_URL=$BACKEND_URL
-PROXY_PORT=$FRONTEND_SSL_PORT
+PROXY_PORT=$BACKEND_PORT
 JWT_SECRET=$JWT_SECRET
 JWT_REFRESH_SECRET=$JWT_REFRESH_SECRET
 
@@ -437,16 +506,55 @@ EOF
         echo ""
         echo -e "${BLUE}--- 🚀 Subindo Serviços ---${NC}"
         if docker compose version > /dev/null 2>&1; then
-            docker compose up -d
+            docker compose up -d mysql
         else
-            docker-compose up -d
+            docker-compose up -d mysql
         fi
-        
-        echo -e "${GREEN}✅ Todos containers no ar!${NC}"
-        
-        echo ""
-        echo -e "${BLUE}⏳ Aguardando inicialização do banco (30s)...${NC}"
-        sleep 30
+
+        echo -e "${BLUE}⏳ Aguardando banco ficar saudável...${NC}"
+        sleep 5
+        if ! wait_for_http "http://localhost:${BACKEND_PORT}/health" 1 1 >/dev/null 2>&1; then
+            true
+        fi
+        local_db_attempts=30
+        local_db_i=1
+        while [ $local_db_i -le $local_db_attempts ]; do
+            if docker ps | grep -q mysql && docker exec $(docker ps -q mysql) mysqladmin ping -h localhost >/dev/null 2>&1; then
+                break
+            fi
+            sleep 2
+            local_db_i=$((local_db_i + 1))
+        done
+
+        if [ $local_db_i -gt $local_db_attempts ]; then
+            echo -e "${RED}❌ Banco não ficou saudável a tempo.${NC}"
+            exit 1
+        fi
+
+        echo -e "${YELLOW}• Subindo backend...${NC}"
+        if docker compose version > /dev/null 2>&1; then
+            docker compose up -d backend
+        else
+            docker-compose up -d backend
+        fi
+
+        echo -e "${BLUE}⏳ Aguardando backend responder /health...${NC}"
+        if ! wait_for_http "http://localhost:${BACKEND_PORT}/health" 45 2; then
+            echo -e "${RED}❌ Backend não ficou saudável a tempo.${NC}"
+            exit 1
+        fi
+
+        echo -e "${BLUE}⏳ Intervalo entre backend e frontend (10s)...${NC}"
+        sleep 10
+
+        echo -e "${YELLOW}• Subindo frontend...${NC}"
+        if docker compose version > /dev/null 2>&1; then
+            docker compose up -d frontend
+        else
+            docker-compose up -d frontend
+        fi
+
+        echo -e "${GREEN}✅ Containers principais no ar!${NC}"
         
         echo -e "${BLUE}--- 🗄️ Executando Migrações ---${NC}"
         if docker compose version > /dev/null 2>&1; then
