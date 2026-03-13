@@ -23,6 +23,28 @@ show_logo() {
 # Mostrar logo inicial
 show_logo
 
+# Função para limpeza TOTAL (mata tudo)
+clean_all_containers() {
+    echo -e "${RED}=== ATENÇÃO: Isso vai parar TODOS os containers Docker! ===${NC}"
+    read -p "Tem certeza? [s/N]: " confirm
+    if [[ "$confirm" =~ ^[Ss]$ ]]; then
+        echo -e "${BLUE}--- Parando todos os containers...${NC}"
+        docker stop $(docker ps -aq) 2>/dev/null || true
+        echo -e "${BLUE}--- Removendo todos os containers...${NC}"
+        docker rm $(docker ps -aq) 2>/dev/null || true
+        echo -e "${BLUE}--- Removendo todas as networks...${NC}"
+        docker network prune -f 2>/dev/null || true
+        echo -e "${BLUE}--- Liberando portas...${NC}"
+        sudo kill -9 $(sudo lsof -t -i:3306) 2>/dev/null || true
+        sudo kill -9 $(sudo lsof -t -i:8080) 2>/dev/null || true
+        sudo kill -9 $(sudo lsof -t -i:80) 2>/dev/null || true
+        sudo kill -9 $(sudo lsof -t -i:443) 2>/dev/null || true
+        sudo systemctl stop mysql 2>/dev/null || true
+        sudo systemctl stop mariadb 2>/dev/null || true
+        echo -e "${GREEN}✓ TUDO limpo!${NC}"
+    fi
+}
+
 echo "Selecione a operação desejada:"
 echo -e "${GREEN}1) Nova Instalação (Instalar do Zero)${NC}"
 echo -e "${YELLOW}2) Atualizar Sistema (Fazer Upgrade do Git e Docker)${NC}"
@@ -59,27 +81,7 @@ if [ "$MENU_OPTION" == "2" ]; then
     exit 0
 fi
 
-# Função para limpeza TOTAL (mata tudo)
-clean_all_containers() {
-    echo -e "${RED}=== ATENÇÃO: Isso vai parar TODOS os containers Docker! ===${NC}"
-    read -p "Tem certeza? [s/N]: " confirm
-    if [[ "$confirm" =~ ^[Ss]$ ]]; then
-        echo -e "${BLUE}--- Parando todos os containers...${NC}"
-        docker stop $(docker ps -aq) 2>/dev/null || true
-        echo -e "${BLUE}--- Removendo todos os containers...${NC}"
-        docker rm $(docker ps -aq) 2>/dev/null || true
-        echo -e "${BLUE}--- Removendo todas as networks...${NC}"
-        docker network prune -f 2>/dev/null || true
-        echo -e "${BLUE}--- Liberando portas...${NC}"
-        sudo kill -9 $(sudo lsof -t -i:3306) 2>/dev/null || true
-        sudo kill -9 $(sudo lsof -t -i:8080) 2>/dev/null || true
-        sudo kill -9 $(sudo lsof -t -i:80) 2>/dev/null || true
-        sudo kill -9 $(sudo lsof -t -i:443) 2>/dev/null || true
-        sudo systemctl stop mysql 2>/dev/null || true
-        sudo systemctl stop mariadb 2>/dev/null || true
-        echo -e "${GREEN}✓ TUDO limpo!${NC}"
-    fi
-}
+if [ "$MENU_OPTION" == "1" ]; then
     echo -e "\n${BLUE}=== Nova Instalação LionsTicket ===${NC}"
     
     read -p "Deseja realizar uma limpeza profunda antes de começar? (ISSO APAGARÁ O BANCO DE DADOS ATUAL!) [s/N]: " CLEAN_START
