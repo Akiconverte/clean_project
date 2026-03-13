@@ -13,7 +13,7 @@ interface MessageData {
   mediaType?: string;
   mediaUrl?: string;
   ack?: number;
-  quotedMsgId?: string;
+  quotedMsgId?: string | null;
 }
 interface Request {
   messageData: MessageData;
@@ -22,9 +22,30 @@ interface Request {
 const CreateMessageService = async ({
   messageData
 }: Request): Promise<Message> => {
-  await Message.upsert(messageData);
+  if (messageData.quotedMsgId) {
+    const quotedExists = await (Message as any).findByPk(messageData.quotedMsgId);
+    if (!quotedExists) {
+      messageData.quotedMsgId = null;
+    }
+  }
 
-  const message = await Message.findByPk(messageData.id, {
+  try {
+    await (Message as any).upsert(messageData);
+  } catch (err: any) {
+    const isQuotedFkError =
+      err?.name === "SequelizeForeignKeyConstraintError" &&
+      (err?.index === "Messages_quotedMsgId_foreign_idx" ||
+        String(err?.original?.sqlMessage || "").includes("Messages_quotedMsgId_foreign_idx"));
+
+    if (isQuotedFkError && messageData.quotedMsgId) {
+      messageData.quotedMsgId = null;
+      await (Message as any).upsert(messageData);
+    } else {
+      throw err;
+    }
+  }
+
+  const message = await (Message as any).findByPk(messageData.id, {
     include: [
       "contact",
       {

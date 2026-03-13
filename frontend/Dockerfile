@@ -20,7 +20,7 @@ RUN wget https://github.com/jwilder/dockerize/releases/download/$DOCKERIZE_VERSI
 ENV PUBLIC_HTML=/var/www/public/
 
 COPY .docker/nginx /etc/nginx/
-COPY --from=build-deps /usr/src/app/dist ${PUBLIC_HTML}
+COPY --from=build-deps /usr/src/app/build ${PUBLIC_HTML}
 EXPOSE 80
 
 COPY .docker/add-env-vars.sh /docker-entrypoint.d/01-add-env-vars.sh
