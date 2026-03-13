@@ -195,6 +195,7 @@ EOF
         
         docker compose down
     fi
+fi
 
     echo ""
     echo -e "${BLUE}=== Etapa 1/3: Construindo Backend (sem cache) ===${NC}"
